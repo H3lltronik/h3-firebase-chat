@@ -1,5 +1,7 @@
-const admin = require("firebase");
+const admin = require("firebase/app");
+require("firebase/database")
 const storage = require("./lib/storage")
+
 
 let db = {}
 
@@ -11,116 +13,163 @@ function H3FirebaseChat (options) {
     db = admin.database();
 }
 
-async function createChat (participants) {
-    let serverTimestamp = admin.database.ServerValue.TIMESTAMP
+async function createChat (chatInfo, participants = []) {
     let pushID = db.ref().push().key;
     // Crear coleccion del chat y retornar ID del chat
     await new Promise( resolve => {
-        let doneCount = 0; // Counter of every participant registered
-        participants.forEach(async participant => {
-            const chatData = {
-                chatID: pushID,
-                joinedTimestamp: serverTimestamp
+        if (!chatInfo) {
+            chatInfo = {
+                name: "",
             }
-            // Registrar para cada participante el ID del chat nuevo
-            await userChatsDocument (participant.userID).child(pushID)
-            .set(chatData)
-            .then(res => {
+        }
+        chatInfo.chatID = pushID,
+        chatDataRef (pushID).set(chatInfo).then(() => {
+            let doneCount = 0; // Counter of every participant registered
+            participants.forEach(participant => {
+                // Registrar para cada participante el ID del chat nuevo
+                addUserToChat(participant.userID, pushID, chatData).finally(() => {
+                    doneCount++;
+                    if (doneCount >= participants.length) {  // Very last iteration
+                        resolve();
+                    }
+                })
 
-                console.log("Chat del usuario " + participant.userID + " registrado")
-            }).catch(err => {
-                console.log("Error " + err)
-            }).finally(() => {
-                doneCount++;
-                if (doneCount >= participants.length) {
-                    resolve();
-                }
-            })
-
-        });
+            });
+        })
     })
     return pushID;
     // Retornar ID del chat
 }
 
-function addUserToChat (user, chatID) {
-    // Registrar en el usuario que pertecene a un nuevo chat
+async function addUserToChat (userID, chatID, chatData = {}) {
+    if (Object.keys(chatData).length === 0 && chatData.constructor === Object) {
+        chatData = {
+            joinedTimestamp: admin.database.ServerValue.TIMESTAMP
+        }
+    }
+    chatData.chatID = chatID;
+    return new Promise (resolve => {
+        userChatsDocument (userID).child(chatID).set(chatData).then(res => {
+            resolve (res);
+        }).catch(err => {
+            throw err
+        })
+    })
 }
 
-function removeUserFromChat (user, chatID) {
-
+function removeUserFromChat (userID, chatID) {
+    return new Promise (resolve => {
+        userChatsDocument (userID).child(chatID).removeValue().then(res => {
+            resolve ({
+                message: `The user ${userID} has been removed from ${chatID}`,
+                res,
+            });
+        }).catch(err => {
+            throw err
+        })
+    })
 }
 
 async function getChatIDs (userID) {
     let chats = [];
-    if (!userID) {
-        await db.ref(`h3-chat`).on('value', snapshot => {
-            chats = snapshotToArray (snapshot);
-        })
-    } else {
-        await db.ref(`h3-chat/${chatID}`).on('value', snapshot => {
-            chats = snapshotToArray (snapshot);
-        })
-    }
-    return chats;
+    return new Promise (resolve => {
+        if (!userID) {
+            chatDataRef().once('value').then(snapshot => {
+                chats = snapshotToArray (snapshot);
+                resolve (chats);
+            })
+        } else {
+            db.ref(`h3-chat/${chatID}`).on('value', snapshot => {
+                chats = snapshotToArray (snapshot);
+                resolve (chats);
+            })
+        }
+    })
 }
 
-async function sendMessage (chatID, content) {
-    let belongs = false;
+async function deleteMessage (chatID, messageID, deleteFiles = true) {
+    return new Promise (async resolve => {
+        let messageData = {} 
+        await chatsMessagesRef(`${chatID}/messages/${messageID}`).once("value").then(message => {
+            messageData = message.val()
+        })
 
-    await checkUserBelongsToChat (content.senderID, chatID).then(async res => { 
-        belongs = res
-
-        if (!belongs) {
-            console.log("The user doesn't belong the this chat!")
-            throw "The user doesn't belong the this chat!"
-        }
-        let uploadedFile = null;
-
-        if (content.hasFile) {
-            await storage.uploadFile(chatID, content.file, function (fileStatus) {
-                return fileStatus.ref.getDownloadURL().then(url => {
-                    console.log("Upload", fileStatus,  url)
-                    return {
-                        bucket: fileStatus.metadata.bucket,
-                        fullPath: fileStatus.metadata.fullPath,
-                        downloadURL: url,
-                        name: fileStatus.metadata.name,
-                        createdAt: fileStatus.metadata.timeCreated,
-                        size: fileStatus.metadata.size
-                    }
-                }).catch(err => {
-                    throw {
-                        message: "Unexpected error when uploading files",
-                        error: err
-                    }
+        chatsMessagesRef(`${chatID}/messages/${messageID}`).remove().then((res) => {
+            if (deleteFiles) {
+                storage.removeFile (messageData.file.fullPath).then(removed => {
+                    console.log("File removed", removed)
                 })
-            }).then(fileStatus => {
-                uploadedFile = fileStatus
+                resolve(messageData);
+            }
+            resolve(messageData);
+        })
+    })
+}
+
+async function sendMessageFunction (chatID, content) {
+    let uploadedFile = null;
+
+    if (content.hasFile) {
+        await storage.uploadFile(chatID, content.file, function (fileStatus) {
+            return fileStatus.ref.getDownloadURL().then(url => {
+                return {
+                    bucket: fileStatus.metadata.bucket,
+                    fullPath: fileStatus.metadata.fullPath,
+                    downloadURL: url,
+                    name: fileStatus.metadata.name,
+                    createdAt: fileStatus.metadata.timeCreated,
+                    size: fileStatus.metadata.size
+                }
             }).catch(err => {
                 throw {
                     message: "Unexpected error when uploading files",
                     error: err
                 }
             })
-        }
-
-        let snd = {...content};
-        snd.file= uploadedFile
-        snd.timestamp = admin.database.ServerValue.TIMESTAMP
-
-        // Check if chat extists and write the snd obj
-        chatDocument(chatID).child("messages").push(snd).catch((err) => {
+        }).then(fileStatus => {
+            uploadedFile = fileStatus
+        }).catch(err => {
             throw {
-                message: "Unexpected error when writing on the database",
+                message: "Unexpected error when uploading files",
                 error: err
             }
         })
+    }
+
+    let key = chatsMessagesRef(chatID).push().key;
+    let snd = {...content};
+    snd.file= uploadedFile
+    snd.messageID = key;
+    snd.timestamp = admin.database.ServerValue.TIMESTAMP
+
+    // Check if chat extists and write the snd obj
+    chatsMessagesRef(chatID).child("messages").child(key).set(snd).catch((err) => {
+        throw {
+            message: "Unexpected error when writing on the database",
+            error: err
+        }
     })
 }
 
+async function sendMessage (chatID, content, checkUserBelonging = false) {
+    let belongs = false;
+    if (checkUserBelonging) {
+        await checkUserBelongsToChat (content.senderID, chatID).then(async res => { 
+            belongs = res
+
+            if (!belongs) {
+                console.error("The user doesn't belong to this chat!")
+                throw "The user doesn't belong to this chat!"
+            }
+            sendMessageFunction (chatID, content);
+        })
+    } else {
+        sendMessageFunction (chatID, content);
+    }
+}
+
 function getMessages (chatID, callback) {
-    const chatRef = chatDocument (chatID).child("messages");
+    const chatRef = chatsMessagesRef (chatID).child("messages");
 
     chatRef.on('value', (docSnapshot) => {
         let messages = snapshotToArray (docSnapshot)
@@ -129,7 +178,7 @@ function getMessages (chatID, callback) {
 }
 
 function chatExists (chatID) {
-    const chatRef = chatDocument (chatID);
+    const chatRef = chatsMessagesRef (chatID);
 
     chatRef.get().then((docSnapshot) => {
         if (docSnapshot.exists) {
@@ -168,8 +217,17 @@ function userChatsDocument (userID) {
     return db.ref(`h3-user-chats/${userID}/chats`);
 }
 
-function chatDocument (chatID) {
-    return db.ref(`h3-chat/${chatID}`)
+function chatsMessagesRef (chatID) {
+    return db.ref(`h3-chats-messages/${chatID}`)
+}
+
+function chatDataRef (chatID) {
+    if (chatID) {
+        return db.ref(`h3-chats-data/${chatID}`)
+    } else {
+        return db.ref(`h3-chats-data`)
+    }
+
 }
 
 function snapshotToArray(snapshot) {
@@ -190,4 +248,7 @@ exports.createChat = createChat;
 exports.sendMessage = sendMessage;
 exports.getMessages = getMessages;
 exports.storage = storage;
-exports.getChatIDs = getChatIDs;
+exports.getChatIDs = getChatIDs
+exports.addUserToChat = addUserToChat
+exports.removeUserFromChat = removeUserFromChat
+exports.deleteMessage = deleteMessage
