@@ -24,9 +24,9 @@ async function createChat (chatInfo, participants = []) {
                 name: "",
             }
         }
-        chatInfo.chatID = pushID,
+        chatInfo.chatID = pushID;
+        let doneCount = 0; // Counter of every participant registered
         chatDataRef (pushID).set(chatInfo).then(() => {
-            let doneCount = 0; // Counter of every participant registered
             participants.forEach(participant => {
                 // Registrar para cada participante el ID del chat nuevo
                 addUserToChat(participant.userID, pushID, chatData).catch(err => {
@@ -40,7 +40,8 @@ async function createChat (chatInfo, participants = []) {
 
             });
         })
-        throw({err: "Algunos usuarios no pudieron ser añadidos", notAdded})
+        if (doneCount < participants.length)
+            throw({err: "Algunos usuarios no pudieron ser añadidos", notAdded})
     })
     // Retornar ID del chat
 }
