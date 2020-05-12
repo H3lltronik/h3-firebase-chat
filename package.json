@@ -1,6 +1,6 @@
 {
   "name": "h3-firebase-chat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A firebase chat backend",
   "main": "index.js",
   "scripts": {
