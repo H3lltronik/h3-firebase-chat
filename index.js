@@ -9,7 +9,8 @@ function H3FirebaseChat (options) {
     let opts = options || {}
 
     console.log("Entering initialization...");
-    admin.initializeApp(opts.credentials);
+    if (opts.credentials)
+        admin.initializeApp(opts.credentials);
     db = admin.database();
 }
 
@@ -17,6 +18,7 @@ async function createChat (chatInfo, participants = []) {
     let pushID = db.ref().push().key;
     // Crear coleccion del chat y retornar ID del chat
     await new Promise( resolve => {
+        let notAdded = []
         if (!chatInfo) {
             chatInfo = {
                 name: "",
@@ -27,17 +29,19 @@ async function createChat (chatInfo, participants = []) {
             let doneCount = 0; // Counter of every participant registered
             participants.forEach(participant => {
                 // Registrar para cada participante el ID del chat nuevo
-                addUserToChat(participant.userID, pushID, chatData).finally(() => {
+                addUserToChat(participant.userID, pushID, chatData).catch(err => {
+                    notAdded.push(participant)
+                }).finally(() => {
                     doneCount++;
                     if (doneCount >= participants.length) {  // Very last iteration
-                        resolve();
+                        resolve(pushID);
                     }
                 })
 
             });
         })
+        throw({err: "Algunos usuarios no pudieron ser añadidos", notAdded})
     })
-    return pushID;
     // Retornar ID del chat
 }
 
